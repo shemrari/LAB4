@@ -1,46 +1,41 @@
-# Android APK Reverse Engineering — Lab Writeup
-
-
+# Analyse d’app APK Android — Rapport de TP
 
 ---
 
-## What This Lab Is About
+## À quoi sert ce TP
 
-Mobile applications ship as `.apk` bundles. Even without running them, you can learn a surprising amount just by picking apart the package. This writeup walks through the complete process I followed: from setting up a controlled environment, to decompiling Java bytecode, to documenting every security-relevant finding.
+Les applications mobiles sont distribuées sous forme de paquets `.apk`. Même sans les exécuter, on peut déjà apprendre beaucoup en disséquant le contenu du fichier. Ce rapport retrace l’ensemble de la démarche suivie : préparation d’un environnement contrôlé, décompilation du bytecode Java, puis consignation de chaque constat lié à la sécurité.
 
-No emulator. No device. Pure static analysis.
-
----
-
-## Tools I Used
-
-| Tool | Purpose |
-|------|---------|
-| PowerShell | File inspection, hashing, ZIP parsing |
-| JADX GUI | APK decompilation and manifest analysis |
-| dex2jar | Dalvik bytecode → Java JAR conversion |
-| JD-GUI | Java source browsing from the converted JAR |
+Pas d’émulateur. Pas de terminal sur appareil. Analyse statique uniquement.
 
 ---
 
-## Step 1 — Building the Lab Environment
+## Outils utilisés
 
-I started by creating a dedicated folder at `C:\APK-Analysis` and dropping the APK inside it. Working in an isolated directory keeps forensic artifacts separate from the rest of the system — a basic but important habit.
+| Outil | Rôle |
+|------|------|
+| PowerShell | Inspection de fichiers, calcul de hachage, lecture ZIP |
+| JADX GUI | Décompilation d’APK et analyse du manifeste |
+| dex2jar | Conversion du Dalvik vers un JAR Java |
+| JD-GUI | Exploration du code source Java à partir du JAR converti |
 
-**Confirming the file is what it claims to be**
+---
 
-APKs are ZIP files with a different extension. The quickest way to verify this is to check the magic bytes at offset 0. A valid ZIP always starts with `50 4B` in hex, which maps to `PK` in ASCII — the signature left by Phil Katz when he designed the format.
+## Étape 1 — Construire l’environnement du TP
 
-I ran a hex dump via PowerShell and confirmed the header matched. Screenshot below:
+J’ai commencé par créer un dossier dédié dans `C:\APK-Analysis` et y déposer l’APK. Travailler dans un répertoire isolé permet de garder les artefacts forensiques séparés du reste du système : c’est une habitude simple, mais importante.
 
+**Vérifier que le fichier correspond bien à ce qu’il annonce**
+
+Un APK est un fichier ZIP avec une extension différente. La vérification la plus rapide consiste à examiner les octets magiques au début (offset 0). Un ZIP valide commence toujours par `50 4B` en hexadécimal, ce qui correspond à `PK` en ASCII — la signature laissée par Phil Katz lors de la création du format.
+
+J’ai lancé un dump hexadécimal via PowerShell et confirmé que l’en-tête était conforme. Capture ci-dessous :
 
 <img width="1200" height="279" alt="Screenshot 2026-03-04 152123" src="https://github.com/user-attachments/assets/4c683637-3b42-46e0-986b-d54d6c1012e8" />
 
+**Accéder au contenu sans extraire**
 
-
-**Peeking inside without extracting**
-
-Using `System.IO.Compression.ZipFile` directly in PowerShell, I listed the first 20 entries without touching the disk:
+En s’appuyant directement sur l’API `System.IO.Compression.ZipFile` dans PowerShell, j’ai listé les 20 premières entrées sans toucher au disque.
 
 ```
 AndroidManifest.xml
@@ -50,42 +45,39 @@ META-INF/MANIFEST.MF
 classes.dex
 res/layout/activity_main.xml
 res/menu/menu_main.xml
-res/mipmap-*/ic_launcher.png  (multiple densities)
+res/mipmap-*/ic_launcher.png  (plusieurs densités)
 resources.arsc
 ```
 
-**Hashing the file**
+**Calcul du hachage**
 
-Before touching anything else, I locked in a SHA-256 fingerprint. If anything changes during the lab, the hash will catch it.
+Avant d’aller plus loin, j’ai “figé” une empreinte SHA-256. Ainsi, si quoi que ce soit change pendant le TP, le hachage permettra de le détecter.
 
 ```
 SHA-256: 1DA8BF57D266109F9A07C01BF7111A1975CE01F190B9D914BCD3AE3DBEF96F21
 ```
 
-
 <img width="1727" height="636" alt="Screenshot 2026-03-04 153134" src="https://github.com/user-attachments/assets/a7fa60b4-dcd5-4cd3-9c7c-a798815aebfa" />
-
 
 ---
 
-## Step 2 — Confirming APK Acquisition
+## Étape 2 — Vérifier l’acquisition de l’APK
 
-Quick sanity check before moving forward. The file was sitting in `C:\APK-Analysis`, dated 3/4/2026, weighing in at 66 KB (66,651 bytes exactly).
+Petit contrôle de bon sens avant de continuer. Le fichier se trouvait dans `C:\APK-Analysis`, daté du 3/4/2026, et faisait exactement 66 Ko (66,651 octets).
 
-Source: OWASP Mobile Security Testing Guide — UnCrackable Level 1. It's a deliberately vulnerable app built for security training.
-
+Source : OWASP Mobile Security Testing Guide — UnCrackable Level 1. Il s’agit d’une application volontairement vulnérable, conçue pour l’entraînement à la sécurité.
 
 <img width="1379" height="552" alt="Screenshot 2026-03-04 151740" src="https://github.com/user-attachments/assets/171a216a-ab28-47cb-a78a-9e0775c6e698" />
 
 ---
 
-## Step 3 — Tearing Apart the Manifest
+## Étape 3 — Décrypter le manifeste
 
-The `AndroidManifest.xml` is the first file I always read. It's the app's ID card — package name, SDK targets, declared components, permissions, and security flags. Everything the system needs to know before launching the app lives here.
+Le `AndroidManifest.xml` est le premier fichier que je consulte systématiquement. C’est la “carte d’identité” de l’application : nom de package, SDK ciblés, composants déclarés, permissions, et indicateurs de sécurité. C’est aussi le document dont Android a besoin avant même de lancer l’application.
 
-I opened the APK in JADX GUI and navigated directly to the manifest.
+J’ai ouvert l’APK dans l’interface JADX et navigué directement vers le manifeste.
 
-**Package identity**
+**Identité du package**
 
 ```xml
 package="owasp.mstg.uncrackable1"
@@ -94,71 +86,69 @@ android:minSdkVersion="19"
 android:targetSdkVersion="28"
 ```
 
-So this app supports anything from Android 4.4 KitKat onwards, targeting Android 9 Pie behavior.
+Donc l’app supporte des versions à partir d’Android 4.4 KitKat et adopte le comportement “cible” d’Android 9 Pie.
 
 **Permissions**
 
-Zero. Not a single `<uses-permission>` tag anywhere. The app doesn't ask for camera, location, contacts, storage — nothing. That's unusual but not suspicious for a standalone challenge app.
+Aucune. Pas une seule balise `<uses-permission>` n’apparaît. L’app ne demande ni caméra, ni localisation, ni contacts, ni stockage — rien. C’est plutôt atypique, mais pas forcément suspect : pour un défi d’entraînement, ça peut correspondre au scénario.
 
-**Components and attack surface**
+**Composants et surface d’attaque**
 
-Only one activity was declared:
+Un seul `Activity` est déclarée :
 
 ```
 sg.vantagepoint.uncrackable1.MainActivity
 ```
 
-It has an `<intent-filter>` with `android.intent.action.MAIN` and `android.intent.category.LAUNCHER`. Because of that filter, Android treats this activity as implicitly exported — meaning other apps on the device can send intents to it directly.
+Elle contient un `<intent-filter>` avec `android.intent.action.MAIN` et `android.intent.category.LAUNCHER`. En conséquence, Android considère cette Activity comme “implicitement exportée”, ce qui signifie que d’autres applications peuvent lui envoyer des intents directement.
 
-**Security flags worth noting**
+**Drapeaux de sécurité à surveiller**
 
-- `android:debuggable` — not set → ✅ good
-- `android:usesCleartextTraffic` — not set → ✅ good  
-- `android:allowBackup="true"` — **present** → ⚠️ risk
+- `android:debuggable` — non défini → ✅ plutôt bon
+- `android:usesCleartextTraffic` — non défini → ✅ plutôt bon  
+- `android:allowBackup="true"` — **présent** → ⚠️ risque
 
-The backup flag is the one finding here. With `allowBackup` enabled, anyone with ADB access can dump the app's private data directory without root:
+C’est le paramètre `allowBackup` qui ressort. Avec `allowBackup` activé, n’importe quel utilisateur ayant un accès ADB peut extraire le dossier de données privées de l’app sans avoir besoin d’être root.
 
 ```bash
 adb backup -noapk owasp.mstg.uncrackable1
 ```
 
-For a training app this is acceptable. In production it's a data leakage vector.
+Pour un TP, c’est acceptable. En production, cela devient un vecteur de fuite de données.
 
 <img width="1321" height="739" alt="Screenshot 2026-03-04 153629" src="https://github.com/user-attachments/assets/fad9229f-ed0a-495e-9c91-6ae231e8adb2" />
 
-
 ---
 
-## Step 4 — Hunting for Hardcoded Secrets
+## Étape 4 — Rechercher des secrets codés en dur
 
-Developers sometimes leave sensitive strings baked into the binary — API keys, tokens, internal URLs, debug credentials. JADX's text search covers classes, methods, fields, code, resources, and comments all at once.
+Il arrive que des chaînes sensibles soient “bâtonnées” dans le binaire : clés API, tokens, URL internes, identifiants de test. Grâce à la recherche texte de JADX, on inspecte simultanément classes, méthodes, champs, ressources et commentaires.
 
-**Search #1 — "http"**
+**Recherche #1 — "http"**
 
-Three hits, all pointing to the same thing:
+Trois occurrences, toutes liées à la même chose.
 
 ```
 http://schemas.android.com/apk/res/android
 ```
 
-This appears in `AndroidManifest.xml`, `activity_main.xml`, and `menu_main.xml`. It's the standard Android XML namespace URI — not a live endpoint, not a leak. Every Android project includes this string automatically.
+Elles apparaissent dans `AndroidManifest.xml`, `activity_main.xml` et `menu_main.xml`. C’est simplement l’URI standard d’espace de noms XML Android — ni une URL d’un service, ni une fuite. Chaque projet Android inclut cette chaîne par défaut.
 
-Risk rating: **none**.
+Niveau de risque : **aucun**.
 
 <img width="977" height="608" alt="Screenshot 2026-03-06 160317" src="https://github.com/user-attachments/assets/36c20060-dc56-4cc7-8614-68ff87c87525" />
 
-
-No sensitive URLs, credentials, or tokens were found in this APK.
+Aucun endpoint sensible, aucune clé, aucun token n’a été repéré dans cet APK.
 
 ---
 
-## Step 5 — Extracting and Converting the DEX Bytecode
+## Étape 5 — Extraire et convertir le bytecode DEX
 
-Android compiles Java into Dalvik Executable (`.dex`) format rather than standard JVM bytecode. To use classic Java decompilers like JD-GUI, the DEX needs to be translated first.
+Android compile le Java en format Dalvik Executable (`.dex`), et non en bytecode JVM standard. Pour utiliser des décompilateurs Java classiques comme JD-GUI, il faut d’abord transformer le DEX.
 
-**Extracting classes.dex**
+**Extraire `classes.dex`**
 
-I created an output directory and used PowerShell's ZIP API to pull only the DEX file out of the APK:
+J’ai créé un répertoire de sortie puis utilisé l’API ZIP de PowerShell pour ne récupérer que le fichier DEX depuis l’APK.
 
 ```powershell
 mkdir dex_out
@@ -169,104 +159,104 @@ $zip.Entries | Where-Object { $_.Name -like "classes*.dex" } | ForEach-Object {
 $zip.Dispose()
 ```
 
-Result: `classes.dex` (5,528 bytes) landed in `dex_out`.
+Résultat : `classes.dex` (5,528 octets) a été placé dans `dex_out`.
 
 <img width="951" height="291" alt="Screenshot 2026-03-06 160552" src="https://github.com/user-attachments/assets/2392be05-c8fa-4edb-9ba3-9b700ecf5748" />
 
-
 <img width="1053" height="349" alt="Screenshot 2026-03-06 160623" src="https://github.com/user-attachments/assets/ac649ecd-687a-41cb-bbde-3f307a92aaea" />
-
 
 <img width="1346" height="480" alt="Screenshot 2026-03-06 160922" src="https://github.com/user-attachments/assets/f1b9a852-7016-46dd-bdb9-8bb25ac60eb3" />
 
-
-**Running dex2jar**
+**Exécuter dex2jar**
 
 ```powershell
 cd C:\APK-Analysis\dex2jar
 .\d2j-dex2jar.bat "C:\APK-Analysis\dex_out\classes.dex" -o "C:\APK-Analysis\app.jar"
 ```
 
-Output: `classes.dex -> C:\APK-Analysis\app.jar` — conversion successful.
+Sortie : `classes.dex -> C:\APK-Analysis\app.jar` — conversion réussie.
 
 <img width="1049" height="89" alt="Screenshot 2026-03-06 161358" src="https://github.com/user-attachments/assets/2f6445e8-2808-4cc0-80a4-bff7a28061fe" />
 
+---
+
+## Étape 6 — JADX contre JD-GUI : quel outil choisir ?
+
+Les deux outils reconstituent du code source Java à partir de bytecode compilé. Mais ils ne se valent pas.
+
+**Pourquoi JADX est particulièrement efficace**
+
+JADX lit les APK directement. Il décode les XML binaires, reconstruit les références de ressources, tente de désobfusquer quand c’est possible, et affiche tout (manifest, ressources, code) dans un navigateur unique. Pour l’analyse Android, c’est généralement le meilleur point de départ.
+
+**Rôle de JD-GUI**
+
+JD-GUI est un décompilateur Java polyvalent. Il ne sait rien des formats spécifiques à Android. Donnez-lui un JAR : il vous affiche des classes, et rien de plus. Les variables restent éventuellement renommées, les identifiants de ressources demeurent sous forme d’entiers, et on perd le contexte.
+
+**Quand passer par dex2jar + JD-GUI**
+
+Parfois, JADX échoue. Les APK fortement protégés (chargeurs de classes personnalisés, configurations multi-dex avec fusion non standard, obfuscation agressive) peuvent entraîner un échec partiel ou total. Dans ce cas, dex2jar arrive souvent quand même à convertir le DEX, et JD-GUI peut fournir un aperçu (même incomplet) de la source.
+
+**Conclusion**
+
+Commencer par JADX, à chaque fois. Basculer vers le pipeline dex2jar → JD-GUI quand JADX bloque.
 
 ---
 
-## Step 6 — JADX vs JD-GUI: Which One Wins?
+## Étape 7 — Synthèse de l’évaluation de sécurité
 
-Both tools reconstruct Java source from compiled bytecode. But they're not equals.
+### Profil de l’application
 
-**Where JADX stands out**
-
-JADX ingests APKs natively. It decodes binary XML, reconstructs resource references, deobfuscates where it can, and presents everything — manifest, resources, and code — inside a single unified browser. For Android work, this is the gold standard.
-
-**Where JD-GUI fits in**
-
-JD-GUI is a general-purpose Java decompiler. It knows nothing about Android-specific formats. Feed it a JAR and it shows you classes — nothing more. Renamed variables stay renamed. Resource IDs stay as integers. You lose context.
-
-**When to reach for dex2jar + JD-GUI**
-
-Sometimes JADX chokes. Heavily protected APKs with custom class loaders, multi-dex setups with non-standard merging, or aggressive obfuscation can cause JADX to fail partially or entirely. In those situations, dex2jar often manages to convert the DEX regardless, and JD-GUI can at least get you partial source to work with.
-
-**Bottom line**
-
-Use JADX first, every time. Fall back to the dex2jar → JD-GUI pipeline when JADX hits a wall.
-
----
-
-## Step 7 — Security Assessment Summary
-
-### Application Profile
-
-| Field | Value |
-|-------|-------|
+| Champ | Valeur |
+|-------|--------|
 | Package | `owasp.mstg.uncrackable1` |
 | Version | 1.0 |
-| SDK Range | 19 – 28 |
-| Permissions | None |
-| Network Traffic | N/A (no network calls detected) |
-| Exported Components | MainActivity (implicit) |
+| Plage SDK | 19 – 28 |
+| Permissions | Aucune |
+| Trafic réseau | N/A (aucun appel réseau détecté) |
+| Composants exportés | MainActivity (implicite) |
 
-### Vulnerability Table
+### Tableau des vulnérabilités
 
-| # | Finding | Severity | Location |
-|---|---------|----------|----------|
-| 1 | `android:allowBackup="true"` enables ADB data extraction | Medium | `AndroidManifest.xml` |
-| 2 | Anti-debug checks present (`isDebuggerConnected`) | Info | Java source (MainActivity) |
-| 3 | MainActivity implicitly exported via intent-filter | Low | `AndroidManifest.xml` |
+| # | Constat | Sévérité | Emplacement |
+|---|---------|----------|-------------|
+| 1 | `android:allowBackup="true"` permet l’extraction via ADB | Medium | `AndroidManifest.xml` |
+| 2 | Vérifications anti-debug (`isDebuggerConnected`) | Info | Source Java (MainActivity) |
+| 3 | MainActivity implicitement exportée via intent-filter | Low | `AndroidManifest.xml` |
 
-### Finding Details
+### Détails des constats
 
-**[MEDIUM] Backup Enabled**  
-Any user with a USB cable and developer mode enabled can dump the app's `/data/data/` directory. For apps storing tokens, session data, or locally cached credentials, this is a real attack path. Fix: `android:allowBackup="false"`.
+**[MEDIUM] Backup activé**
 
-**[INFO] Anti-Debug Logic**  
-The app detects debugger attachment at runtime. This is a protection, not a flaw. It signals the developer was aware of runtime analysis and took steps against it — which is exactly what you'd expect from a crackme challenge.
+N’importe qui disposant d’un câble USB et du mode développeur activé peut vider le répertoire `/data/data/` de l’application. Pour une app stockant des tokens, des sessions ou des identifiants en cache local, c’est un vrai chemin d’attaque. Correctif : `android:allowBackup="false"`.
 
-**[LOW] Exported Entry Point**  
-`MainActivity` is reachable by external intents because it handles `MAIN/LAUNCHER`. Standard behavior for a launcher activity. No data processing from incoming intents was identified, so the practical risk here is minimal.
+**[INFO] Logique anti-debug**
 
-### Recommendations
+L’application détecte si un debugger est attaché à l’exécution. C’est une mesure de protection, pas un défaut. Elle indique que le développeur a anticipé l’analyse runtime et a mis en place des garde-fous — ce qui correspond précisément à l’esprit d’un crackme.
 
-1. Set `android:allowBackup="false"` before any production deployment
-2. Review any Intent extras parsed by `MainActivity` for injection risks
-3. Current configuration (no permissions, no cleartext traffic, no debug flag) is solid — keep it
+**[LOW] Point d’entrée exporté**
+
+`MainActivity` est accessible via des intents externes parce qu’elle gère `MAIN/LAUNCHER`. C’est le comportement standard d’une activité de lancement. Aucune manipulation de données en provenance d’intents entrants n’a été identifiée, donc le risque pratique reste faible.
+
+### Recommandations
+
+1. Positionner `android:allowBackup="false"` avant toute mise en production
+2. Vérifier les extras d’intent interprétés par `MainActivity` pour écarter les risques d’injection
+3. La configuration actuelle est saine (pas de permissions, pas de cleartext traffic, pas de flag debug) — conserver cet état
 
 ---
 
-## Step 8 — Cleanup
+## Étape 8 — Nettoyage
 
-After wrapping up the analysis, intermediate files were cleared:
+Une fois l’analyse terminée, les fichiers intermédiaires ont été supprimés.
 
 ```powershell
 Remove-Item -Recurse -Force .\dex_out
 Remove-Item .\UnCrackable-Level1.apk
 ```
 
-The converted `app.jar` was archived under `\results` for future reference. No sensitive data was handled during this lab — the target is a public training application.
+Le `app.jar` converti a été archivé dans `\results` pour référence ultérieure. Aucune donnée sensible n’a été manipulée : l’objectif de ce TP est une application de formation publique.
 
 ---
 
-*Lab completed. All findings documented. Environment cleaned.*
+*TP terminé. Tous les constats sont consignés. Environnement nettoyé.*
+
